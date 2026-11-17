@@ -1,0 +1,33 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: booking
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-booking}
+      POSTGRES_DB: booking
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U booking -d booking"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: jdbc:postgresql://db:5432/booking
+      DATABASE_USER: booking
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-booking}
+      JWT_SECRET: ${JWT_SECRET:?Copy .env.example to .env first}
+      DEMO_DATA: ${DEMO_DATA:-true}
+    ports:
+      - "${PORT:-8080}:8080"
+
+volumes:
+  pgdata:

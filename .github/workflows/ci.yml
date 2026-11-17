@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+      - name: Unit and integration tests (Testcontainers starts Postgres)
+        run: ./mvnw -B -ntp verify
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp .env.example .env
+      - run: docker compose up -d --build --wait
+      - name: Book through the running API and hit a double booking
+        run: |
+          api=http://localhost:8080
+          token=$(curl --fail --silent -X POST $api/api/auth/login -H 'content-type: application/json' \
+            -d '{"email": "demo@example.com", "password": "demo-password"}' | jq -r .accessToken)
+          space=$(curl --fail --silent $api/api/spaces | jq -r '.[] | select(.name == "Phone Booth") | .id')
+          day=$(TZ=America/Bogota date -d '+2 days' +%F)
+          book() {
+            curl --silent --output /dev/null --write-out '%{http_code}' -X POST $api/api/bookings \
+              -H "authorization: Bearer $token" -H 'content-type: application/json' \
+              -d "{\"spaceId\": \"$space\", \"title\": \"$1\", \"startsAt\": \"${day}T$2-05:00\", \"endsAt\": \"${day}T$3-05:00\"}"
+          }
+          test "$(book 'Call' '10:00:00' '11:00:00')" = "201"
+          test "$(book 'Clash' '10:30:00' '11:30:00')" = "409"
+          test "$(book 'Next call' '11:00:00' '11:30:00')" = "201"
+          curl --fail --silent "$api/api/spaces/$space/availability?date=$day" | tee day.json | jq .
+          test "$(jq '.booked | length' day.json)" = "2"
+      - name: Admin endpoints reject regular users
+        run: |
+          token=$(curl --fail --silent -X POST http://localhost:8080/api/auth/login -H 'content-type: application/json' \
+            -d '{"email": "demo@example.com", "password": "demo-password"}' | jq -r .accessToken)
+          status=$(curl --silent --output /dev/null --write-out '%{http_code}' -X POST http://localhost:8080/api/spaces \
+            -H "authorization: Bearer $token" -H 'content-type: application/json' \
+            -d '{"name": "Vault", "capacity": 2, "timeZone": "UTC", "opensAt": "08:00", "closesAt": "20:00"}')
+          test "$status" = "403"
+      - name: API documentation is served
+        run: curl --fail --silent --location http://localhost:8080/docs > /dev/null
+      - name: Show logs
+        if: always()
+        run: docker compose logs api
+      - run: docker compose down -v
